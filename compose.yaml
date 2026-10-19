@@ -1,0 +1,52 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      # Inside Compose, services reach each other by service name.
+      DATABASE_URL: postgresql+asyncpg://rateforge:rateforge@postgres:5432/rateforge
+      REDIS_URL: redis://redis:6379/0
+      # Integration tests create this database on demand and rebuild its tables per test.
+      TEST_DATABASE_URL: postgresql+asyncpg://rateforge:rateforge@postgres:5432/rateforge_test
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+      - ./tests:/app/tests
+      - ./scripts:/app/scripts
+    # Apply migrations, then start the server with auto-reload for development.
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rateforge
+      POSTGRES_PASSWORD: rateforge
+      POSTGRES_DB: rateforge
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rateforge -d rateforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:

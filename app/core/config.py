@@ -1,0 +1,37 @@
+from functools import lru_cache
+
+from pydantic import Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    environment: str = "development"
+    log_level: str = "INFO"
+    database_url: str = "postgresql+asyncpg://rateforge:rateforge@localhost:5432/rateforge"
+    redis_url: str = "redis://localhost:6379/0"
+
+    # How long a readiness probe waits for each dependency.
+    health_check_timeout_seconds: float = 2.0
+
+    # Secrets: required, no defaults, so a missing value fails at startup instead of
+    # silently running with something guessable.
+    api_key_hmac_secret: str = Field(min_length=32)
+    admin_token: str = Field(min_length=16)
+
+    # Minimum gap between `last_used_at` writes for one key (avoids a write per request).
+    key_last_used_update_seconds: int = 60
+
+    @model_validator(mode="after")
+    def reject_dev_secrets_in_production(self) -> "Settings":
+        if self.environment.lower() == "production":
+            for name in ("api_key_hmac_secret", "admin_token"):
+                if getattr(self, name).startswith("dev-only"):
+                    raise ValueError(f"{name} must be changed before running in production")
+        return self
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
