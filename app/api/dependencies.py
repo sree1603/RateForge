@@ -25,6 +25,16 @@ def _unauthorized() -> HTTPException:
     return HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing credentials")
 
 
+async def _principal_from_key(session: AsyncSession, api_key: str) -> Principal:
+    try:
+        key = await authenticate_api_key(session, api_key)
+    except InvalidCredentials:
+        raise _unauthorized() from None
+    except TenantSuspended:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Tenant is suspended") from None
+    return Principal(is_admin=False, tenant_id=key.tenant_id, api_key_id=key.id)
+
+
 async def get_principal(
     admin_token: str | None = Depends(_admin_header),
     api_key: str | None = Depends(_key_header),
@@ -35,14 +45,18 @@ async def get_principal(
             return Principal(is_admin=True)
         raise _unauthorized()
     if api_key:
-        try:
-            key = await authenticate_api_key(session, api_key)
-        except InvalidCredentials:
-            raise _unauthorized() from None
-        except TenantSuspended:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "Tenant is suspended") from None
-        return Principal(is_admin=False, tenant_id=key.tenant_id, api_key_id=key.id)
+        return await _principal_from_key(session, api_key)
     raise _unauthorized()
+
+
+async def get_tenant_principal(
+    api_key: str | None = Depends(_key_header),
+    session: AsyncSession = Depends(get_session),
+) -> Principal:
+    """For the gateway: only a tenant API key is accepted, never the admin token."""
+    if not api_key:
+        raise _unauthorized()
+    return await _principal_from_key(session, api_key)
 
 
 async def require_admin(principal: Principal = Depends(get_principal)) -> Principal:

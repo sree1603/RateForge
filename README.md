@@ -6,7 +6,7 @@ Multi-tenant API gateway and rate-limiting platform (FastAPI, PostgreSQL, Redis)
 
 - [x] Phase 1: project skeleton, Docker Compose, health endpoints, logging, Alembic setup
 - [x] Phase 2: tenants, plans, API keys
-- [ ] Phase 3: reverse proxy
+- [x] Phase 3: reverse proxy
 - [ ] Phase 4: Redis token-bucket rate limiting
 - [ ] Phase 5: usage analytics
 - [ ] Phase 6: CI, load tests, documentation
@@ -53,6 +53,24 @@ curl -s -X POST localhost:8000/api/v1/keys -H "$ADMIN" -H "Content-Type: applica
 # 5. Authenticate with it
 curl -s localhost:8000/api/v1/keys -H "X-API-Key: <API_KEY>"
 ```
+
+## Try the gateway (Phase 3)
+
+`scripts/seed.py` also registers a demo upstream (the `echo` container) and a route at
+`/gateway/echo`. With the API key from the steps above:
+
+```bash
+curl "localhost:8000/gateway/echo/hello?x=1" -H "X-API-Key: <API_KEY>"
+```
+
+The echo service replies with what it received, so you can check that the path and query arrived,
+that your `X-API-Key` was **not** forwarded, and that `X-Request-ID` and `X-Rateforge-Tenant` were
+added. Other things to try: `/gateway/echo/slow?seconds=40` (504 after the upstream's read timeout),
+`/gateway/echo/status/503` (passes through), `/gateway/echo/stream?chunks=5` (streams),
+`/gateway/echo/%2e%2e/admin` (400).
+
+Admin endpoints for the gateway: `POST/GET/PATCH /api/v1/upstreams` and `POST/GET/PATCH /api/v1/routes`.
+Design decisions are written up in `docs/decisions/0003-gateway-proxy-design.md`.
 
 ## Run tests and lint
 

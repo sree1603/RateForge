@@ -20,6 +20,15 @@ class Settings(BaseSettings):
     api_key_hmac_secret: str = Field(min_length=32)
     admin_token: str = Field(min_length=16)
 
+    # Gateway / proxy
+    gateway_max_body_bytes: int = 10 * 1024 * 1024
+    http_pool_max_connections: int = 200
+    http_pool_max_keepalive: int = 50
+    proxy_pool_timeout_seconds: float = 5.0
+    # If False, upstream URLs pointing at private or loopback addresses are rejected.
+    # Leave True when upstreams are internal services (Docker network, VPC).
+    allow_private_upstreams: bool = True
+
     # Minimum gap between `last_used_at` writes for one key (avoids a write per request).
     key_last_used_update_seconds: int = 60
 

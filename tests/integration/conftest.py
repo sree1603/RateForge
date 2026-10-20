@@ -6,9 +6,11 @@ Set TEST_DATABASE_URL to override; by default the database named in DATABASE_URL
 """
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 
 import asyncpg
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.engine import make_url
@@ -78,15 +80,59 @@ async def db(session_factory) -> AsyncIterator[AsyncSession]:
         yield session
 
 
+@dataclass
+class Received:
+    request: httpx.Request
+    body: bytes
+
+
+class FakeUpstream:
+    """Stands in for the real upstream service. Records what the gateway sent and answers
+    with `responder(request)`, which may return an httpx.Response or raise/return an error."""
+
+    def __init__(self) -> None:
+        self.calls: list[Received] = []
+        self.responder: Callable[[httpx.Request], httpx.Response | Exception] = lambda request: (
+            httpx.Response(200, json={"ok": True})
+        )
+
+    async def handle(self, request: httpx.Request) -> httpx.Response:
+        body = await request.aread()
+        self.calls.append(Received(request, body))
+        result = self.responder(request)
+        if isinstance(result, Exception):
+            raise result
+        if result.is_stream_consumed:
+            # httpx pre-reads responses built with content=...; a real network response is
+            # still an unread stream when it reaches the gateway, so recreate that state.
+            result = httpx.Response(
+                result.status_code,
+                headers=result.headers,
+                stream=httpx.ByteStream(result.content),
+            )
+        return result
+
+
 @pytest.fixture
-async def client(session_factory) -> AsyncIterator[AsyncClient]:
+def upstream() -> FakeUpstream:
+    return FakeUpstream()
+
+
+@pytest.fixture
+async def client(session_factory, upstream) -> AsyncIterator[AsyncClient]:
     async def override_get_session() -> AsyncIterator[AsyncSession]:
         async with session_factory() as session:
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
+    # The test transport does not run the app lifespan, so install the gateway's HTTP
+    # client ourselves, wired to the fake upstream instead of the network.
+    app.state.http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream.handle), follow_redirects=False
+    )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
+    await app.state.http_client.aclose()
     app.dependency_overrides.clear()
 
 
@@ -116,3 +162,42 @@ async def make_key(client, admin):
         return response.json()
 
     return _make
+
+
+@pytest.fixture
+async def gateway(client, admin, make_tenant, make_key):
+    """A tenant with an API key and a route at /gateway/echo -> http://upstream.test:9000."""
+
+    async def _setup(
+        methods=("GET", "POST", "PUT", "PATCH", "DELETE"),
+        base_url="http://upstream.test:9000",
+        strip_prefix=True,
+        **upstream_fields,
+    ) -> dict:
+        tenant = await make_tenant("acme")
+        key = await make_key(tenant["id"])
+        up = await client.post(
+            "/api/v1/upstreams",
+            json={"name": "echo", "base_url": base_url, **upstream_fields},
+            headers=admin,
+        )
+        assert up.status_code == 201, up.text
+        route = await client.post(
+            "/api/v1/routes",
+            json={
+                "upstream_id": up.json()["id"],
+                "path_prefix": "echo",
+                "allowed_methods": list(methods),
+                "strip_prefix": strip_prefix,
+            },
+            headers=admin,
+        )
+        assert route.status_code == 201, route.text
+        return {
+            "tenant": tenant,
+            "upstream": up.json(),
+            "route": route.json(),
+            "headers": {"X-API-Key": key["api_key"]},
+        }
+
+    return _setup
