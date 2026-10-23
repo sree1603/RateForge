@@ -1,5 +1,7 @@
+import asyncio
 import logging
 
+import redis
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,13 +10,40 @@ from app.api.dependencies import Principal, get_tenant_principal
 from app.core.config import get_settings
 from app.db.session import get_session
 from app.repositories import routing as routing_repo
+from app.services import policy as policy_service
 from app.services import routing
 from app.services.proxy import ProxyTarget, forward_request
+from app.services.rate_limiter import Decision
 
 logger = logging.getLogger("rateforge.gateway")
 router = APIRouter(prefix="/gateway", tags=["gateway"])
 
 METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+# Anything that means "could not get an answer from Redis".
+LIMITER_ERRORS = (redis.RedisError, OSError, TimeoutError, asyncio.TimeoutError)
+
+
+def _limit_headers(decision: Decision) -> dict[str, str]:
+    headers = {
+        "X-RateLimit-Limit": str(decision.limit),
+        "X-RateLimit-Remaining": str(decision.remaining),
+        "X-RateLimit-Reset": str(decision.reset_seconds),
+    }
+    if decision.quota_limit is not None:
+        headers["X-Quota-Limit"] = str(decision.quota_limit)
+        headers["X-Quota-Remaining"] = str(decision.quota_remaining)
+    return headers
+
+
+def _rejection(decision: Decision) -> JSONResponse:
+    if decision.outcome == "quota_exceeded":
+        detail = "Monthly quota exceeded"
+    else:
+        detail = "Rate limit exceeded"
+    return _json_error(
+        429, detail, {**_limit_headers(decision), "Retry-After": str(decision.retry_after_seconds)}
+    )
 
 
 def _json_error(
@@ -51,6 +80,30 @@ async def gateway(
     except routing.InvalidPath as exc:
         return _json_error(400, str(exc))
 
+    # Every request that would actually be forwarded is checked against the tenant's plan.
+    # Malformed or unknown requests (404/405/400 above) cost nothing, so they cannot eat a
+    # tenant's quota.
+    settings = get_settings()
+    policy = await policy_service.get_policy(session, principal.tenant_id)
+    if policy is None:
+        return _json_error(403, "No plan is assigned to this tenant")
+
+    decision: Decision | None = None
+    try:
+        decision = await request.app.state.rate_limiter.check(principal.tenant_id, policy)
+    except LIMITER_ERRORS as exc:
+        logger.error(
+            "rate limiter unavailable",
+            extra={"path": f"{route.path_prefix}:{type(exc).__name__}"},
+        )
+        if settings.rate_limit_failure_mode == "closed":
+            return _json_error(
+                503, "Rate limiter unavailable; try again shortly", {"Retry-After": "1"}
+            )
+        # fail open: carry on without limiting, and without limit headers
+    if decision is not None and not decision.allowed:
+        return _rejection(decision)
+
     target = ProxyTarget(
         url=routing.build_upstream_url(
             route.upstream.base_url, route.path_prefix, route.strip_prefix, path
@@ -65,11 +118,14 @@ async def gateway(
     # call. Otherwise every in-flight proxied request would hold a connection.
     await session.close()
 
-    settings = get_settings()
-    return await forward_request(
+    response = await forward_request(
         request,
         target,
         client=request.app.state.http_client,
         max_body_bytes=settings.gateway_max_body_bytes,
         pool_timeout=settings.proxy_pool_timeout_seconds,
     )
+    if decision is not None:
+        for name, value in _limit_headers(decision).items():
+            response.headers[name] = value  # replaces any same-named header from the upstream
+    return response

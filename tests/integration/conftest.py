@@ -12,16 +12,29 @@ from dataclasses import dataclass
 import asyncpg
 import httpx
 import pytest
+import redis.asyncio as aioredis
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
+from app.core.redis import create_redis_client
 from app.db.base import Base
 from app.db.session import get_session
 from app.main import app
 from app.models import Plan, Tenant  # noqa: F401  (ensure models are registered)
+from app.services.policy import policy_cache
+from app.services.rate_limiter import RateLimiter
+
+
+def _test_redis_url() -> str:
+    """Redis database 15 (never the app's database 0), wiped around every test."""
+    explicit = os.environ.get("TEST_REDIS_URL")
+    if explicit:
+        return explicit
+    base = get_settings().redis_url.rsplit("/", 1)[0]
+    return f"{base}/15"
 
 
 def _test_url() -> str:
@@ -66,6 +79,25 @@ async def engine():
         await conn.run_sync(Base.metadata.create_all)
     yield eng
     await eng.dispose()
+
+
+@pytest.fixture
+def redis_url() -> str:
+    return _test_redis_url()
+
+
+@pytest.fixture
+async def redis_client(redis_url) -> AsyncIterator[aioredis.Redis]:
+    client = create_redis_client(redis_url, max_connections=100, timeout_seconds=2)
+    try:
+        await client.ping()
+    except (aioredis.RedisError, OSError) as exc:
+        await client.aclose()
+        pytest.skip(f"Redis not reachable for integration tests: {exc}")
+    await client.flushdb()
+    yield client
+    await client.flushdb()
+    await client.aclose()
 
 
 @pytest.fixture
@@ -125,6 +157,7 @@ async def client(session_factory, upstream) -> AsyncIterator[AsyncClient]:
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
+    policy_cache.clear()
     # The test transport does not run the app lifespan, so install the gateway's HTTP
     # client ourselves, wired to the fake upstream instead of the network.
     app.state.http_client = httpx.AsyncClient(
@@ -165,17 +198,52 @@ async def make_key(client, admin):
 
 
 @pytest.fixture
-async def gateway(client, admin, make_tenant, make_key):
-    """A tenant with an API key and a route at /gateway/echo -> http://upstream.test:9000."""
+async def gateway(client, admin, make_tenant, make_key, redis_client):
+    """A tenant with an API key, a plan, and a route at /gateway/echo -> http://upstream.test:9000.
+
+    Uses the real Redis limiter. The default plan is generous so tests that are not about
+    limits never hit it; pass limit/window/quota to test limiting.
+    """
+    app.state.rate_limiter = RateLimiter(redis_client)
+    plan_counter = {"n": 0}
+
+    async def _assign_plan(tenant_id: str, limit: int, window: int, quota: int | None) -> dict:
+        plan_counter["n"] += 1
+        plan = await client.post(
+            "/api/v1/plans",
+            json={
+                "name": f"plan-{plan_counter['n']}",
+                "requests_per_window": limit,
+                "window_seconds": window,
+                "monthly_quota": quota,
+            },
+            headers=admin,
+        )
+        assert plan.status_code == 201, plan.text
+        assigned = await client.put(
+            f"/api/v1/tenants/{tenant_id}/plan", json={"plan_id": plan.json()["id"]}, headers=admin
+        )
+        assert assigned.status_code == 200, assigned.text
+        return plan.json()
+
+    async def _add_tenant(
+        name: str, limit: int = 10_000, window: int = 60, quota: int | None = None
+    ):
+        tenant = await make_tenant(name)
+        key = await make_key(tenant["id"])
+        plan = await _assign_plan(tenant["id"], limit, window, quota) if limit else None
+        return {"tenant": tenant, "headers": {"X-API-Key": key["api_key"]}, "plan": plan}
 
     async def _setup(
         methods=("GET", "POST", "PUT", "PATCH", "DELETE"),
         base_url="http://upstream.test:9000",
         strip_prefix=True,
+        limit: int | None = 10_000,
+        window: int = 60,
+        quota: int | None = None,
         **upstream_fields,
     ) -> dict:
-        tenant = await make_tenant("acme")
-        key = await make_key(tenant["id"])
+        tenant = await _add_tenant("acme", limit or 0, window, quota)
         up = await client.post(
             "/api/v1/upstreams",
             json={"name": "echo", "base_url": base_url, **upstream_fields},
@@ -194,10 +262,11 @@ async def gateway(client, admin, make_tenant, make_key):
         )
         assert route.status_code == 201, route.text
         return {
-            "tenant": tenant,
+            **tenant,
             "upstream": up.json(),
             "route": route.json(),
-            "headers": {"X-API-Key": key["api_key"]},
+            "add_tenant": _add_tenant,
+            "assign_plan": _assign_plan,
         }
 
     return _setup

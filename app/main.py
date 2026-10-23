@@ -4,14 +4,15 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
-from redis.asyncio import Redis
 
 from app.api import gateway, health
 from app.api.v1 import api_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
+from app.core.redis import create_redis_client
 from app.db.session import engine
+from app.services.rate_limiter import RateLimiter
 
 logger = logging.getLogger("rateforge")
 
@@ -20,7 +21,12 @@ logger = logging.getLogger("rateforge")
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level)
-    app.state.redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    app.state.redis = create_redis_client(
+        settings.redis_url,
+        max_connections=settings.redis_max_connections,
+        timeout_seconds=settings.redis_timeout_seconds,
+    )
+    app.state.rate_limiter = RateLimiter(app.state.redis)
     app.state.http_client = httpx.AsyncClient(
         follow_redirects=False,  # an upstream must not be able to redirect us elsewhere
         trust_env=False,  # ignore HTTP(S)_PROXY variables: the gateway talks to upstreams directly

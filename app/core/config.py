@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,6 +29,16 @@ class Settings(BaseSettings):
     # If False, upstream URLs pointing at private or loopback addresses are rejected.
     # Leave True when upstreams are internal services (Docker network, VPC).
     allow_private_upstreams: bool = True
+
+    # Rate limiting
+    # What to do when Redis cannot be reached: "closed" rejects requests with 503 (protects
+    # upstreams, hurts availability); "open" lets them through unlimited (the reverse).
+    rate_limit_failure_mode: Literal["open", "closed"] = "closed"
+    redis_timeout_seconds: float = 0.5
+    redis_max_connections: int = 100
+    # How long a tenant's resolved plan is cached in each gateway process. A plan change
+    # made on another instance can take up to this long to be noticed.
+    policy_cache_ttl_seconds: float = 30.0
 
     # Minimum gap between `last_used_at` writes for one key (avoids a write per request).
     key_last_used_update_seconds: int = 60

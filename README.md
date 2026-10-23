@@ -7,7 +7,7 @@ Multi-tenant API gateway and rate-limiting platform (FastAPI, PostgreSQL, Redis)
 - [x] Phase 1: project skeleton, Docker Compose, health endpoints, logging, Alembic setup
 - [x] Phase 2: tenants, plans, API keys
 - [x] Phase 3: reverse proxy
-- [ ] Phase 4: Redis token-bucket rate limiting
+- [x] Phase 4: Redis token-bucket rate limiting
 - [ ] Phase 5: usage analytics
 - [ ] Phase 6: CI, load tests, documentation
 
@@ -57,7 +57,14 @@ curl -s localhost:8000/api/v1/keys -H "X-API-Key: <API_KEY>"
 ## Try the gateway (Phase 3)
 
 `scripts/seed.py` also registers a demo upstream (the `echo` container) and a route at
-`/gateway/echo`. With the API key from the steps above:
+`/gateway/echo`. A tenant needs a plan before the gateway will serve it (Phase 4), so the quickest
+way to get a working key is:
+
+```bash
+docker compose run --rm api python scripts/seed.py --demo-key
+```
+
+It creates a tenant `demo` on the Basic plan and prints an API key (shown once). Then:
 
 ```bash
 curl "localhost:8000/gateway/echo/hello?x=1" -H "X-API-Key: <API_KEY>"
@@ -72,6 +79,25 @@ added. Other things to try: `/gateway/echo/slow?seconds=40` (504 after the upstr
 Admin endpoints for the gateway: `POST/GET/PATCH /api/v1/upstreams` and `POST/GET/PATCH /api/v1/routes`.
 Design decisions are written up in `docs/decisions/0003-gateway-proxy-design.md`.
 
+## Rate limits and quotas (Phase 4)
+
+Each tenant's plan sets a token bucket: `requests_per_window` tokens, refilled evenly over
+`window_seconds`, optionally with a `monthly_quota`. Every forwarded request spends a token.
+Responses carry `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, and, when the
+limit is hit, HTTP 429 with `Retry-After`.
+
+Compose starts two gateway instances (`api` on port 8000, `api2` on port 8001) that share one
+Redis. This script alternates requests between them and shows the limit is shared:
+
+```bash
+docker compose run --rm api python scripts/demo_rate_limit.py --key <API_KEY> --requests 100
+```
+
+With the Basic plan (60 per minute) the total allowed is about 60, not 120. Design notes and
+trade-offs: `docs/decisions/0004-rate-limiting.md`. Settings (all optional):
+`RATE_LIMIT_FAILURE_MODE` (`closed` or `open`), `REDIS_TIMEOUT_SECONDS`, `REDIS_MAX_CONNECTIONS`,
+`POLICY_CACHE_TTL_SECONDS`.
+
 ## Run tests and lint
 
 ```bash
@@ -79,7 +105,7 @@ docker compose run --rm api pytest
 docker compose run --rm api ruff check .
 ```
 
-Integration tests need PostgreSQL (they create a `<database>_test` database automatically) and are skipped if it is unreachable.
+Integration tests need PostgreSQL and Redis (they create a `<database>_test` database and use Redis database 15) and are skipped if either is unreachable.
 
 Or without Docker: `python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]" && pytest`
 

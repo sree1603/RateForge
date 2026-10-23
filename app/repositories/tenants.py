@@ -16,6 +16,10 @@ async def get_tenant(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_tenant_by_name(session: AsyncSession, name: str) -> Tenant | None:
+    return (await session.execute(select(Tenant).where(Tenant.name == name))).scalar_one_or_none()
+
+
 async def list_tenants(session: AsyncSession) -> list[Tenant]:
     result = await session.execute(select(Tenant).order_by(Tenant.created_at, Tenant.name))
     return list(result.scalars())
