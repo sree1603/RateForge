@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     # made on another instance can take up to this long to be noticed.
     policy_cache_ttl_seconds: float = 30.0
 
+    # Usage recording
+    usage_queue_size: int = 10_000
+    usage_batch_size: int = 100
+    usage_flush_interval_seconds: float = 1.0
+
     # Minimum gap between `last_used_at` writes for one key (avoids a write per request).
     key_last_used_update_seconds: int = 60
 

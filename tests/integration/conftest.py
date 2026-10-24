@@ -26,6 +26,7 @@ from app.main import app
 from app.models import Plan, Tenant  # noqa: F401  (ensure models are registered)
 from app.services.policy import policy_cache
 from app.services.rate_limiter import RateLimiter
+from app.services.usage import BufferedUsageRecorder
 
 
 def _test_redis_url() -> str:
@@ -158,6 +159,8 @@ async def client(session_factory, upstream) -> AsyncIterator[AsyncClient]:
 
     app.dependency_overrides[get_session] = override_get_session
     policy_cache.clear()
+    # Not started: tests call `await recorder.flush()` themselves, so results are deterministic.
+    app.state.usage_recorder = BufferedUsageRecorder(session_factory)
     # The test transport does not run the app lifespan, so install the gateway's HTTP
     # client ourselves, wired to the fake upstream instead of the network.
     app.state.http_client = httpx.AsyncClient(
@@ -270,3 +273,9 @@ async def gateway(client, admin, make_tenant, make_key, redis_client):
         }
 
     return _setup
+
+
+@pytest.fixture
+def recorder(client) -> BufferedUsageRecorder:
+    """The usage recorder wired into the app for this test."""
+    return app.state.usage_recorder

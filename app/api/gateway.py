@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import Principal, get_tenant_principal
 from app.core.config import get_settings
+from app.core.usage_context import usage_ctx
 from app.db.session import get_session
 from app.repositories import routing as routing_repo
 from app.services import policy as policy_service
@@ -66,6 +67,15 @@ async def gateway(
     if route is None or not route.enabled or not route.upstream.enabled:
         return _json_error(404, "Route not found")
 
+    # From here on the request is attributable to a tenant and a real route, so it is
+    # recorded (see app/core/usage_context.py). The outcome starts as "rejected" and is
+    # upgraded below as the request gets further.
+    usage = usage_ctx.get()
+    if usage is not None:
+        usage.tenant_id = principal.tenant_id
+        usage.route_id = route.id
+        usage.route_prefix = route.path_prefix
+
     method = request.method
     allowed = method in route.allowed_methods or (
         method == "HEAD" and "GET" in route.allowed_methods
@@ -102,7 +112,11 @@ async def gateway(
             )
         # fail open: carry on without limiting, and without limit headers
     if decision is not None and not decision.allowed:
+        if usage is not None:
+            usage.outcome = decision.outcome  # "rate_limited" or "quota_exceeded"
         return _rejection(decision)
+    if usage is not None:
+        usage.outcome = "forwarded"
 
     target = ProxyTarget(
         url=routing.build_upstream_url(

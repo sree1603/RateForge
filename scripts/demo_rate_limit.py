@@ -10,6 +10,7 @@ tokens that refill while the script runs (a Basic plan earns 1 token per second)
 
 import argparse
 import asyncio
+import sys
 import time
 from collections import Counter
 
@@ -28,6 +29,12 @@ async def main(key: str, urls: list[str], route: str, requests: int, window: int
             response = await client.get(f"{url}/gateway/{route}/demo", headers=headers)
             per_instance[url][response.status_code] += 1
             total[response.status_code] += 1
+            if i == 0 and response.status_code in (401, 403):
+                sys.exit(
+                    f"The gateway answered {response.status_code} to the first request, so the key "
+                    "is wrong, revoked, or the tenant has no plan. Pass a real key with --key "
+                    "(create one with: python scripts/seed.py --demo-key)."
+                )
             if i == 0:
                 limit = int(response.headers.get("x-ratelimit-limit", "0"))
                 print(

@@ -1,11 +1,13 @@
 import logging
 import time
 import uuid
+from datetime import UTC, datetime
 
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.logging import request_id_ctx
+from app.core.usage_context import UsageContext, UsageRecord, usage_ctx
 
 logger = logging.getLogger("rateforge.request")
 
@@ -31,6 +33,9 @@ class RequestContextMiddleware:
         inbound = Headers(scope=scope).get(REQUEST_ID_HEADER, "")
         request_id = inbound if 0 < len(inbound) <= 64 else f"req_{uuid.uuid4().hex[:16]}"
         token = request_id_ctx.set(request_id)
+        usage = UsageContext()
+        usage_token = usage_ctx.set(usage)
+        started_at = datetime.now(UTC)
         start = time.perf_counter()
         status_code = 500
 
@@ -50,13 +55,50 @@ class RequestContextMiddleware:
             )
             raise
         finally:
+            latency_ms = round((time.perf_counter() - start) * 1000, 2)
             logger.info(
                 "request completed",
                 extra={
                     "method": scope["method"],
                     "path": scope["path"],
                     "status_code": status_code,
-                    "latency_ms": round((time.perf_counter() - start) * 1000, 2),
+                    "latency_ms": latency_ms,
                 },
             )
+            self._record_usage(
+                scope, usage, request_id, scope["method"], status_code, latency_ms, started_at
+            )
+            usage_ctx.reset(usage_token)
             request_id_ctx.reset(token)
+
+    @staticmethod
+    def _record_usage(
+        scope: Scope,
+        usage: UsageContext,
+        request_id: str,
+        method: str,
+        status_code: int,
+        latency_ms: float,
+        started_at: datetime,
+    ) -> None:
+        if not usage.recordable:
+            return
+        recorder = getattr(scope["app"].state, "usage_recorder", None)
+        if recorder is None:
+            return
+        try:
+            recorder.record(
+                UsageRecord(
+                    tenant_id=usage.tenant_id,
+                    route_id=usage.route_id,
+                    route_prefix=usage.route_prefix,
+                    request_id=request_id,
+                    method=method,
+                    status_code=status_code,
+                    outcome=usage.outcome,
+                    latency_ms=latency_ms,
+                    occurred_at=started_at,
+                )
+            )
+        except Exception:  # recording must never break a request
+            logger.exception("could not record usage")

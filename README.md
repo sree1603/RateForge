@@ -8,7 +8,7 @@ Multi-tenant API gateway and rate-limiting platform (FastAPI, PostgreSQL, Redis)
 - [x] Phase 2: tenants, plans, API keys
 - [x] Phase 3: reverse proxy
 - [x] Phase 4: Redis token-bucket rate limiting
-- [ ] Phase 5: usage analytics
+- [x] Phase 5: usage analytics
 - [ ] Phase 6: CI, load tests, documentation
 
 ## Run locally
@@ -97,6 +97,26 @@ With the Basic plan (60 per minute) the total allowed is about 60, not 120. Desi
 trade-offs: `docs/decisions/0004-rate-limiting.md`. Settings (all optional):
 `RATE_LIMIT_FAILURE_MODE` (`closed` or `open`), `REDIS_TIMEOUT_SECONDS`, `REDIS_MAX_CONNECTIONS`,
 `POLICY_CACHE_TTL_SECONDS`.
+
+## Usage analytics (Phase 5)
+
+Every request from a tenant to a real route is recorded (tenant, route, method, status, outcome,
+latency, request ID). Never stored: headers, query strings, bodies, keys, or paths beyond the
+route prefix. Events are buffered in memory and written in batches, so they appear in the API
+about a second after the request.
+
+```bash
+# Counts, error rate, p50/p95/p99 latency, top routes, timeline (24h by default).
+curl "localhost:8000/api/v1/usage/summary" -H "X-API-Key: <API_KEY>"
+
+# Individual requests, newest first. Filters: start, end, route, status_code, outcome.
+curl "localhost:8000/api/v1/usage?outcome=rate_limited&limit=20" -H "X-API-Key: <API_KEY>"
+```
+
+Tenants see their own data; the admin token (`X-Admin-Token`) sees everyone's and can add
+`tenant_id=<id>`. Both endpoints are also in the interactive docs at `/docs`.
+Definitions, limits and trade-offs: `docs/decisions/0005-usage-tracking.md`. Optional settings:
+`USAGE_QUEUE_SIZE`, `USAGE_BATCH_SIZE`, `USAGE_FLUSH_INTERVAL_SECONDS`.
 
 ## Run tests and lint
 
