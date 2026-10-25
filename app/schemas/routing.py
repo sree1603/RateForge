@@ -5,13 +5,14 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.ssrf import validate_upstream_url
+from app.schemas.common import Name
 
 ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
-_PREFIX_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+ROUTE_PREFIX_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 class UpstreamCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
+    name: Name
     base_url: str = Field(max_length=2048)
     connect_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
     read_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
@@ -45,7 +46,7 @@ class RouteCreate(BaseModel):
     @field_validator("path_prefix")
     @classmethod
     def check_prefix(cls, value: str) -> str:
-        if not _PREFIX_RE.match(value):
+        if not ROUTE_PREFIX_RE.match(value):
             raise ValueError("path_prefix must match ^[a-z0-9][a-z0-9_-]{0,63}$")
         return value
 

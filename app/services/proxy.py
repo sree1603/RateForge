@@ -7,6 +7,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app.core.logging import request_id_ctx
+from app.observability.metrics import UPSTREAM_ERRORS
 
 logger = logging.getLogger("rateforge.proxy")
 
@@ -187,14 +188,18 @@ async def forward_request(
     except httpx.InvalidURL:
         return _error(400, "Invalid request URL")
     except httpx.PoolTimeout:
+        UPSTREAM_ERRORS.labels(kind="pool_exhausted").inc()
         logger.warning("proxy pool exhausted", extra={"path": target.route_prefix})
         return _error(503, "Gateway is overloaded; try again shortly")
     except httpx.TimeoutException:
+        UPSTREAM_ERRORS.labels(kind="timeout").inc()
         logger.warning("upstream timeout", extra={"path": target.route_prefix})
         return _error(504, "Upstream timed out")
     except (httpx.TransportError, BodyTooLarge) as exc:
         if limiter is not None and limiter.exceeded:
+            UPSTREAM_ERRORS.labels(kind="body_too_large").inc()
             return _error(413, "Request body too large")
+        UPSTREAM_ERRORS.labels(kind="unreachable").inc()
         logger.warning(
             "upstream error", extra={"path": f"{target.route_prefix}:{type(exc).__name__}"}
         )

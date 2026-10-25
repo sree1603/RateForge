@@ -24,6 +24,7 @@ from sqlalchemy import insert
 
 from app.core.usage_context import UsageRecord
 from app.models import UsageEvent
+from app.observability.metrics import USAGE_EVENTS
 
 logger = logging.getLogger("rateforge.usage")
 
@@ -59,6 +60,7 @@ class BufferedUsageRecorder:
             self._queue.put_nowait(event)
         except asyncio.QueueFull:
             self.dropped += 1
+            USAGE_EVENTS.labels(result="dropped").inc()
             if self.dropped == 1 or self.dropped % 1000 == 0:
                 logger.warning(
                     "usage queue full; dropping events", extra={"path": str(self.dropped)}
@@ -97,12 +99,14 @@ class BufferedUsageRecorder:
                 await session.commit()
         except Exception as exc:  # never let analytics take the gateway down
             self.failed += len(batch)
+            USAGE_EVENTS.labels(result="failed").inc(len(batch))
             logger.error(
                 "could not write usage events",
                 extra={"path": f"{type(exc).__name__}:{len(batch)}"},
             )
         else:
             self.written += len(batch)
+            USAGE_EVENTS.labels(result="written").inc(len(batch))
 
     async def stop(self) -> None:
         """Flush what is left. Called at shutdown, before the database engine is closed."""

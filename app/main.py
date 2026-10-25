@@ -5,9 +5,10 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI
 
-from app.api import gateway, health
+from app.api import gateway, health, metrics
 from app.api.v1 import api_router
 from app.core.config import get_settings
+from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.core.redis import create_redis_client
@@ -28,13 +29,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         timeout_seconds=settings.redis_timeout_seconds,
     )
     app.state.rate_limiter = RateLimiter(app.state.redis)
-    app.state.usage_recorder = BufferedUsageRecorder(
-        SessionLocal,
-        queue_size=settings.usage_queue_size,
-        batch_size=settings.usage_batch_size,
-        flush_interval_seconds=settings.usage_flush_interval_seconds,
-    )
-    app.state.usage_recorder.start()
     app.state.http_client = httpx.AsyncClient(
         follow_redirects=False,  # an upstream must not be able to redirect us elsewhere
         trust_env=False,  # ignore HTTP(S)_PROXY variables: the gateway talks to upstreams directly
@@ -44,9 +38,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ),
         timeout=httpx.Timeout(30.0, pool=settings.proxy_pool_timeout_seconds),
     )
+    if settings.usage_recording_enabled:
+        app.state.usage_recorder = BufferedUsageRecorder(
+            SessionLocal,
+            queue_size=settings.usage_queue_size,
+            batch_size=settings.usage_batch_size,
+            flush_interval_seconds=settings.usage_flush_interval_seconds,
+        )
+        app.state.usage_recorder.start()
     logger.info("rateforge starting", extra={"path": settings.environment})
     yield
-    await app.state.usage_recorder.stop()  # write what is queued, before the DB goes away
+    if settings.usage_recording_enabled:
+        await app.state.usage_recorder.stop()  # write what is queued, before the DB goes away
     await app.state.http_client.aclose()
     await app.state.redis.aclose()
     await engine.dispose()
@@ -56,7 +59,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     app = FastAPI(title="RateForge", version="0.1.0", lifespan=lifespan)
     app.add_middleware(RequestContextMiddleware)
+    register_exception_handlers(app)
     app.include_router(health.router)
+    app.include_router(metrics.router)
     app.include_router(api_router)
     app.include_router(gateway.router)
     return app

@@ -10,6 +10,12 @@ class Settings(BaseSettings):
 
     environment: str = "development"
     log_level: str = "INFO"
+    # Database connection pool: per process. Total connections = this x workers x instances,
+    # which must stay below PostgreSQL's max_connections (100 by default).
+    db_pool_size: int = 10
+    db_max_overflow: int = 10
+    db_pool_timeout_seconds: float = 5.0  # how long a request waits for a free connection
+    db_connect_timeout_seconds: float = 5.0
     database_url: str = "postgresql+asyncpg://rateforge:rateforge@localhost:5432/rateforge"
     redis_url: str = "redis://localhost:6379/0"
 
@@ -36,6 +42,9 @@ class Settings(BaseSettings):
     rate_limit_failure_mode: Literal["open", "closed"] = "closed"
     redis_timeout_seconds: float = 0.5
     redis_max_connections: int = 100
+    # How long a route (and its upstream settings) is cached in each gateway process. A change
+    # made on another instance is noticed within this time; 0 disables the cache.
+    route_cache_ttl_seconds: float = 5.0
     # How long a tenant's resolved plan is cached in each gateway process. A plan change
     # made on another instance can take up to this long to be noticed.
     policy_cache_ttl_seconds: float = 30.0
@@ -44,6 +53,11 @@ class Settings(BaseSettings):
     usage_queue_size: int = 10_000
     usage_batch_size: int = 100
     usage_flush_interval_seconds: float = 1.0
+    usage_recording_enabled: bool = True
+
+    # /metrics exposes route names and traffic volumes, so it needs the admin token unless
+    # you deliberately make it public (e.g. it is only reachable from a private network).
+    metrics_public: bool = False
 
     # Minimum gap between `last_used_at` writes for one key (avoids a write per request).
     key_last_used_update_seconds: int = 60

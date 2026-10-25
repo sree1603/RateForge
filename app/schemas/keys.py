@@ -3,11 +3,13 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.common import Name
+
 
 class KeyCreate(BaseModel):
     # Admins must say which tenant; tenants may omit it (it can only be themselves).
     tenant_id: uuid.UUID | None = None
-    name: str = Field(min_length=1, max_length=100)
+    name: Name
     expires_in_days: int | None = Field(default=None, ge=1, le=3650)
 
 

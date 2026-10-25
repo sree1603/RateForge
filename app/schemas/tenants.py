@@ -3,9 +3,11 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.common import Name
+
 
 class TenantCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
+    name: Name
 
 
 class TenantOut(BaseModel):
@@ -18,7 +20,7 @@ class TenantOut(BaseModel):
 
 
 class PlanCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
+    name: Name
     requests_per_window: int = Field(gt=0, le=1_000_000)
     window_seconds: int = Field(gt=0, le=86_400)
     monthly_quota: int | None = Field(default=None, gt=0)

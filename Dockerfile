@@ -8,7 +8,7 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY app ./app
-RUN pip install -e ".[dev]"
+RUN pip install -e ".[dev,load]"
 
 COPY alembic.ini ./
 COPY scripts ./scripts

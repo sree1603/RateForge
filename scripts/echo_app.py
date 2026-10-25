@@ -3,6 +3,7 @@
 Run by Docker Compose as the `echo` service (http://echo:9000 inside the network).
 
     GET  /anything/you/like     -> JSON describing the request the upstream received
+    GET  /fast                  -> a tiny fixed response (used by the load tests)
     GET  /slow?seconds=3        -> responds after a delay (to see the 504 timeout)
     GET  /status/503            -> responds with that status code
     GET  /stream?chunks=5       -> sends 5 chunks 0.3s apart (to see streaming)
@@ -20,6 +21,8 @@ app = FastAPI(title="echo upstream", docs_url=None, redoc_url=None, openapi_url=
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
 async def echo(path: str, request: Request) -> Response:
+    if path == "fast":
+        return Response(b"ok", media_type="text/plain")
     if path == "slow":
         await asyncio.sleep(float(request.query_params.get("seconds", "1")))
     if path.startswith("status/"):

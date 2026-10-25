@@ -1,0 +1,41 @@
+# Production-like settings for load testing. Use together with compose.yaml:
+#
+#   docker compose -f compose.yaml -f compose.load.yaml up -d --build
+#
+# Differences from the development setup: no auto-reload (it slows the server), no per-request
+# access log, warnings-only application logging, and the number of server processes, database
+# pool sizes and usage recording are controlled by environment variables so each can be varied
+# on its own. PowerShell example:
+#
+#   $env:WORKERS = "2"; docker compose -f compose.yaml -f compose.load.yaml up -d --build
+#
+# Every setting below can be changed independently; record what you changed with --note.
+
+services:
+  api:
+    command: >
+      sh -c "rm -rf /tmp/prom && mkdir -p /tmp/prom && alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000
+             --workers ${WORKERS:-1} --no-access-log"
+    environment: &load_env
+      LOG_LEVEL: ${LOG_LEVEL:-WARNING}
+      USAGE_RECORDING_ENABLED: ${USAGE_RECORDING_ENABLED:-true}
+      ROUTE_CACHE_TTL_SECONDS: ${ROUTE_CACHE_TTL_SECONDS:-5}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-5}
+      # Combine the metrics of all worker processes (see app/observability/metrics.py).
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prom
+
+  api2:
+    command: >
+      sh -c "rm -rf /tmp/prom && mkdir -p /tmp/prom &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000
+             --workers ${WORKERS:-1} --no-access-log"
+    environment: *load_env
+
+  echo:
+    command: uvicorn --app-dir scripts echo_app:app --host 0.0.0.0 --port 9000 --no-access-log
+
+  postgres:
+    # Several workers x instances x pool size can exceed the default of 100 connections.
+    command: postgres -c max_connections=300

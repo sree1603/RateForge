@@ -21,6 +21,7 @@ services:
       - ./app:/app/app
       - ./tests:/app/tests
       - ./scripts:/app/scripts
+      - ./docs:/app/docs  # load-test results are written here
     # Apply migrations, then start the server with auto-reload for development.
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     healthcheck:

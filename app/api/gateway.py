@@ -10,7 +10,8 @@ from app.api.dependencies import Principal, get_tenant_principal
 from app.core.config import get_settings
 from app.core.usage_context import usage_ctx
 from app.db.session import get_session
-from app.repositories import routing as routing_repo
+from app.observability.metrics import LIMITER_FAILURES
+from app.schemas.routing import ROUTE_PREFIX_RE
 from app.services import policy as policy_service
 from app.services import routing
 from app.services.proxy import ProxyTarget, forward_request
@@ -62,9 +63,13 @@ async def gateway(
     principal: Principal = Depends(get_tenant_principal),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    route = await routing_repo.get_route_by_prefix(session, route_prefix)
+    # Prefixes are validated when routes are created, so anything else cannot match a route.
+    # Checking first keeps hostile bytes (NUL, huge strings) away from the database.
+    if not ROUTE_PREFIX_RE.fullmatch(route_prefix):
+        return _json_error(404, "Route not found")
+    route = await routing.get_route_snapshot(session, route_prefix)
     # One answer for "no such route", "route disabled" and "upstream disabled".
-    if route is None or not route.enabled or not route.upstream.enabled:
+    if route is None or not route.active:
         return _json_error(404, "Route not found")
 
     # From here on the request is attributable to a tenant and a real route, so it is
@@ -73,7 +78,7 @@ async def gateway(
     usage = usage_ctx.get()
     if usage is not None:
         usage.tenant_id = principal.tenant_id
-        usage.route_id = route.id
+        usage.route_id = route.route_id
         usage.route_prefix = route.path_prefix
 
     method = request.method
@@ -102,6 +107,7 @@ async def gateway(
     try:
         decision = await request.app.state.rate_limiter.check(principal.tenant_id, policy)
     except LIMITER_ERRORS as exc:
+        LIMITER_FAILURES.inc()
         logger.error(
             "rate limiter unavailable",
             extra={"path": f"{route.path_prefix}:{type(exc).__name__}"},
@@ -119,13 +125,11 @@ async def gateway(
         usage.outcome = "forwarded"
 
     target = ProxyTarget(
-        url=routing.build_upstream_url(
-            route.upstream.base_url, route.path_prefix, route.strip_prefix, path
-        ),
+        url=routing.build_upstream_url(route.base_url, route.path_prefix, route.strip_prefix, path),
         route_prefix=route.path_prefix,
         tenant_id=str(principal.tenant_id),
-        connect_timeout=route.upstream.connect_timeout_seconds,
-        read_timeout=route.upstream.read_timeout_seconds,
+        connect_timeout=route.connect_timeout_seconds,
+        read_timeout=route.read_timeout_seconds,
     )
 
     # Give the database connection back to the pool *before* the (possibly slow) upstream

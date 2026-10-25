@@ -1,0 +1,33 @@
+{
+  "label": "ab-cache-on-2",
+  "environment": {
+    "machine": "development sandbox: 1 vCPU, 4 GB RAM, shared by everything",
+    "platform": "Linux-6.18.44-fc-v153-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "cpus_visible": 1,
+    "memory_gb_visible": 3.9,
+    "users": 10,
+    "duration_seconds": 12,
+    "gateway_instances": 1,
+    "note": "A/B test: ROUTE_CACHE_TTL_SECONDS=5, otherwise identical; 1 worker, usage recording on",
+    "date": "2026-10-24 14:24 UTC"
+  },
+  "results": {
+    "allowed": {
+      "requests": 1428,
+      "failures": 0,
+      "rps": 119.06323652344435,
+      "p50": 74.0,
+      "p95": 150.0,
+      "p99": 210.0,
+      "statuses": {
+        "200": {
+          "requests": 1428,
+          "p50": 74.0,
+          "p95": 150.0,
+          "p99": 210.0
+        }
+      }
+    }
+  }
+}

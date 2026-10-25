@@ -10,6 +10,7 @@ from app.core.usage_context import OUTCOMES
 from app.db.session import get_session
 from app.repositories import usage as usage_repo
 from app.repositories.usage import UsageFilters
+from app.schemas.common import NO_CONTROL_CHARACTERS
 from app.schemas.usage import UsagePage, UsageSummary
 
 router = APIRouter(tags=["usage"])
@@ -60,7 +61,9 @@ def _filters(
 async def list_usage(
     start: datetime | None = Query(None, description="Inclusive. Default: 24 hours before 'end'."),
     end: datetime | None = Query(None, description="Exclusive. Default: now."),
-    route: str | None = Query(None, description="Route prefix, e.g. 'echo'."),
+    route: str | None = Query(
+        None, max_length=64, pattern=NO_CONTROL_CHARACTERS, description="Route prefix, e.g. 'echo'."
+    ),
     status_code: int | None = Query(None, ge=100, le=599),
     outcome: Outcome | None = None,
     tenant_id: uuid.UUID | None = Query(None, description="Admins only; ignored for tenants."),
@@ -92,7 +95,9 @@ async def list_usage(
 async def usage_summary(
     start: datetime | None = Query(None, description="Inclusive. Default: 24 hours before 'end'."),
     end: datetime | None = Query(None, description="Exclusive. Default: now."),
-    route: str | None = Query(None, description="Route prefix, e.g. 'echo'."),
+    route: str | None = Query(
+        None, max_length=64, pattern=NO_CONTROL_CHARACTERS, description="Route prefix, e.g. 'echo'."
+    ),
     tenant_id: uuid.UUID | None = Query(None, description="Admins only; ignored for tenants."),
     bucket: Literal["minute", "hour", "day"] = "hour",
     principal: Principal = Depends(get_principal),

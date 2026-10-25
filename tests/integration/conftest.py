@@ -26,7 +26,16 @@ from app.main import app
 from app.models import Plan, Tenant  # noqa: F401  (ensure models are registered)
 from app.services.policy import policy_cache
 from app.services.rate_limiter import RateLimiter
+from app.services.routing import route_cache
 from app.services.usage import BufferedUsageRecorder
+
+
+def _unavailable(message: str) -> None:
+    """Skip when a service is missing locally, but fail in CI (REQUIRE_SERVICES=1) so a
+    broken service container can never turn the whole integration suite into a green no-op."""
+    if os.environ.get("REQUIRE_SERVICES"):
+        pytest.fail(message, pytrace=False)
+    pytest.skip(message)
 
 
 def _test_redis_url() -> str:
@@ -73,7 +82,7 @@ async def engine():
     try:
         await _ensure_database_exists(url)
     except (OSError, asyncpg.PostgresError) as exc:
-        pytest.skip(f"PostgreSQL not reachable for integration tests: {exc}")
+        _unavailable(f"PostgreSQL not reachable for integration tests: {exc}")
     eng = create_async_engine(url, poolclass=NullPool)
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -94,7 +103,7 @@ async def redis_client(redis_url) -> AsyncIterator[aioredis.Redis]:
         await client.ping()
     except (aioredis.RedisError, OSError) as exc:
         await client.aclose()
-        pytest.skip(f"Redis not reachable for integration tests: {exc}")
+        _unavailable(f"Redis not reachable for integration tests: {exc}")
     await client.flushdb()
     yield client
     await client.flushdb()
@@ -159,6 +168,7 @@ async def client(session_factory, upstream) -> AsyncIterator[AsyncClient]:
 
     app.dependency_overrides[get_session] = override_get_session
     policy_cache.clear()
+    route_cache.clear()
     # Not started: tests call `await recorder.flush()` themselves, so results are deterministic.
     app.state.usage_recorder = BufferedUsageRecorder(session_factory)
     # The test transport does not run the app lifespan, so install the gateway's HTTP
